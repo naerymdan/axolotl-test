@@ -7,7 +7,11 @@ import com.github.javafaker.Faker;
 import com.rkscg.axolotltest.server.ServerAPI;
 import org.whispersystems.libaxolotl.*;
 import org.whispersystems.libaxolotl.ecc.ECPublicKey;
+import org.whispersystems.libaxolotl.groups.GroupCipher;
+import org.whispersystems.libaxolotl.groups.GroupSessionBuilder;
+import org.whispersystems.libaxolotl.groups.SenderKeyName;
 import org.whispersystems.libaxolotl.protocol.PreKeyWhisperMessage;
+import org.whispersystems.libaxolotl.protocol.SenderKeyDistributionMessage;
 import org.whispersystems.libaxolotl.protocol.WhisperMessage;
 import org.whispersystems.libaxolotl.state.PreKeyBundle;
 import org.whispersystems.libaxolotl.state.PreKeyRecord;
@@ -143,6 +147,9 @@ public class ClientRunnable implements Runnable {
 
                     break;
                 }
+
+                //Give it a bit of latency between checks
+                Thread.sleep(100);
             } while (true);
         }
 
@@ -209,8 +216,153 @@ public class ClientRunnable implements Runnable {
         } while (true);
     }
 
-    private void runGroupSession(List<AxolotlAddress> contacts) {
+    private void runGroupSession(List<AxolotlAddress> contacts) throws InvalidMessageException, LegacyMessageException, DuplicateMessageException, NoSessionException, InterruptedException {
+        GroupCipher encryptGroupCipher = null;
+        Map<String, GroupCipher> decryptGroupCiphers = new HashMap<>();
+        InMemorySenderKeyStore senderStore = new InMemorySenderKeyStore();
+        GroupSessionBuilder sessionBuilder = new GroupSessionBuilder(senderStore);
+        String groupName = "About this project...";
 
+        //Let's assume the lowest deviceID gets to initiate conversation
+        if (this.address.getDeviceId() < contacts.stream().min(Comparator.comparing(AxolotlAddress::getDeviceId)).get().getDeviceId()) {
+            System.out.println(this.address.getName() + " - Multiple contacts, will attempt to initiate group session with all other existing contacts");
+
+            // Instantiate a Sender's key representing the group from ourselves
+            SenderKeyName senderKeyName = new SenderKeyName(groupName, this.address);
+
+            //We build the group session and cipher
+            encryptGroupCipher = new GroupCipher(senderStore, senderKeyName);
+
+            //Send a message to contacts which is automatically a SenderKeyDistributionMessage message by default as we have no existing session
+            //Used by other contacts to initiate read session from you
+            SenderKeyDistributionMessage senderDistributionMessage = sessionBuilder.create(senderKeyName);
+            for (AxolotlAddress contact : contacts) {
+                ServerAPI.sendMessage(this.address.getName(), contact.getName(), senderDistributionMessage.serialize());
+            }
+
+        } else {
+
+            System.out.println(this.address.getName() + " - Multiple contact, will wait for group session initiation");
+        }
+
+        //Let's poll (pretend this is push notification-triggered) for session initiation from other contacts
+        //TODO merge into basic polling to initiate sessions as needed
+        do {
+            Map<String, List<byte[]>> bundle = ServerAPI.retreiveMessages(this.address.getName());
+
+            for (Map.Entry<String, List<byte[]>> subbundle : bundle.entrySet()) {
+
+                List<byte[]> messages = subbundle.getValue();
+
+                //Group session has not even been started
+
+                //Imagine this message was received wrapped in group information such as member list, group name and such.
+                SenderKeyDistributionMessage senderKeyDistributionMessage = new SenderKeyDistributionMessage(messages.get(0));
+
+                // Instantiate a Sender's key representing the group from the sending contact
+                AxolotlAddress groupInitiator = contacts.stream().filter(v -> v.getName().equalsIgnoreCase(subbundle.getKey())).findFirst().get();
+                SenderKeyName senderKeyName = new SenderKeyName(groupName, groupInitiator);
+
+                //Start the session for reading group originator
+                sessionBuilder.process(senderKeyName, senderKeyDistributionMessage);
+
+                //Save the decryption group cipher for that contact
+                decryptGroupCiphers.put(subbundle.getKey(), new GroupCipher(senderStore, senderKeyName));
+
+                //Only run this on group initiation
+                if (encryptGroupCipher == null) {
+                    //Create the encryption group cipher
+                    encryptGroupCipher = new GroupCipher(senderStore, new SenderKeyName(groupName, this.address));
+
+                    //Send a message to all other group members (SenderKeyDistributionMessage)
+                    //Used by other contacts to initiate read session from you
+                    SenderKeyDistributionMessage senderDistributionMessage = sessionBuilder.create(new SenderKeyName(groupName, this.address));
+                    for (AxolotlAddress contact : contacts) {
+                        ServerAPI.sendMessage(this.address.getName(), contact.getName(), senderDistributionMessage.serialize());
+                    }
+
+                    System.out.println(this.address.getName() + " - Started group chat session '" + groupName + "' initiated from " + subbundle.getKey());
+                } else {
+                    System.out.println(this.address.getName() + " - Received decryption session from " + subbundle.getKey());
+                }
+
+                messages.remove(0);
+
+                //If more stacked messages, process to ratchet the cipher (should not happen in this setup)
+                for (byte[] message : messages) {
+                    byte[] text = encryptGroupCipher.decrypt(message);
+                    System.out.println(this.address.getName() + " <- " + subbundle.getKey() + ": " + new String(text, StandardCharsets.UTF_8));
+                }
+            }
+
+            //Give it a bit of latency between checks
+            Thread.sleep(100);
+
+        } while (decryptGroupCiphers.size() < 2);
+
+        //Let's give use some time to setup the group chat since we do actually check the message type and it would be weird to
+        Thread.sleep(3000);
+
+        // Let's now play the game of sending random messages,
+        // at random times, a random number of times before checking
+        // for random amounts of time
+        List<byte[]> pendingMessages = new ArrayList<>();
+        do {
+            boolean active    = random.nextBoolean();
+            boolean connected = random.nextBoolean();
+
+            //User is actively sending messages, internet might be bad.
+            if (active) {
+                //Send a few messages messages
+                for (int i = 0; i < random.nextInt(4); i++) {
+
+                    try {
+                        String message = faker.lorem().sentence();
+
+                        pendingMessages.add(encryptGroupCipher.encrypt(message.getBytes(StandardCharsets.UTF_8)));
+
+                        System.out.println(this.address.getName() + " -> GROUP: " + message);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+
+                    Thread.sleep(random.nextInt(3) * 200);
+                }
+            }
+
+            //User has internet connectivity, sends and receive pending messaged
+            if (connected) {
+
+                //Send
+                for (byte[] message : pendingMessages) {
+
+                    //Send copies for each contact
+                    for (AxolotlAddress contact : contacts) {
+                        ServerAPI.sendMessage(this.address.getName(), contact.getName(), message);
+                    }
+                }
+                pendingMessages.clear();
+
+                //Receive
+                Map<String, List<byte[]>> bundle = ServerAPI.retreiveMessages(this.address.getName());
+                for (Map.Entry<String, List<byte[]>> subbundle : bundle.entrySet()) {
+                    String name = subbundle.getKey();
+                    List<byte[]> messages = subbundle.getValue();
+                    GroupCipher decryptGroupCiphes = decryptGroupCiphers.get(name);
+
+                    for (byte[] message : messages) {
+                        try {
+                            byte[] text = decryptGroupCiphes.decrypt(message);
+                            System.out.println(this.address.getName() + " <- " + name + ": " + new String(text, StandardCharsets.UTF_8));
+                        } catch (Exception e) {
+                            System.out.println("ERROR - " + this.address.getName() + " cannot decrypt message from " + name + ". Received " + Arrays.toString(message));
+                        }
+                    }
+                }
+            }
+
+            Thread.sleep(random.nextInt(3) * 1000);
+        } while (true);
     }
 
     private byte[] prepareMessage(String to, String message, SessionCipher sessionCipher) {
