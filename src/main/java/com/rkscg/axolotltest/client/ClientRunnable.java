@@ -69,7 +69,7 @@ public class ClientRunnable implements Runnable {
     public void run() {
 
         System.out.println(this.address.getName() + " - Attempting to retrieve contacts using service");
-        List<AxolotlAddress> contacts = ServerAPI.getContacts(this.address.getName());;
+        List<AxolotlAddress> contacts = ServerAPI.getContacts(this.address.getName());
 
         while (contacts == null || contacts.size() == 0) {
 
@@ -153,6 +153,9 @@ public class ClientRunnable implements Runnable {
             } while (true);
         }
 
+        //Let's give use some time to setup the session
+        Thread.sleep(3000);
+
         // Let's now play the game of sending random messages,
         // at random times, a random number of times before checking
         // for random amounts of time
@@ -216,7 +219,7 @@ public class ClientRunnable implements Runnable {
         } while (true);
     }
 
-    private void runGroupSession(List<AxolotlAddress> contacts) throws InvalidMessageException, LegacyMessageException, DuplicateMessageException, NoSessionException, InterruptedException {
+    private void runGroupSession(List<AxolotlAddress> contacts) throws InvalidMessageException, LegacyMessageException, DuplicateMessageException, NoSessionException, InterruptedException, NullPointerException {
         GroupCipher encryptGroupCipher = null;
         Map<String, GroupCipher> decryptGroupCiphers = new HashMap<>();
         InMemorySenderKeyStore senderStore = new InMemorySenderKeyStore();

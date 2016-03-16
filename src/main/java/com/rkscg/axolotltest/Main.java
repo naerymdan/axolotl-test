@@ -7,7 +7,6 @@ import com.github.javafaker.Faker;
 import com.rkscg.axolotltest.client.ClientRunnable;
 import org.whispersystems.libaxolotl.InvalidKeyException;
 
-import java.io.Console;
 import java.lang.reflect.Field;
 import java.security.PermissionCollection;
 import java.security.Permission;
@@ -18,6 +17,7 @@ import java.util.Random;
 
 public class Main {
 
+    //public static void main(final String[] args)
     public static void main(String [] args) throws InvalidKeyException, InterruptedException {
 
         System.out.println("System - Booting up");
